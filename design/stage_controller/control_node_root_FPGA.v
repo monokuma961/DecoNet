@@ -1,175 +1,261 @@
-module parent_controller #(
-    parameter CODE_DISTANCE_X = 3,
-    parameter CODE_DISTANCE_Z = 2,
+module root_controller #(
     parameter ITERATION_COUNTER_WIDTH = 8,  // counts to 255 iterations
-    parameter MAXIMUM_INITIAL_DELAY = 10,
-    parameter MAXIMUM_BUSY_DELAY = 7,
-    parameter CHILD_COUNT = 2
+    parameter MAXIMUM_DELAY = 2, // This has use only in multi-fpga mode
+    parameter CTRL_FIFO_WIDTH = 64,
+    parameter NUM_CHILDREN = 4
 ) (
     clk,
     reset,
-    new_round_start,
 
-    busy_child, 
-    odd_clusters_child,
-    global_stage,
+    data_from_cpu,
+    valid_from_cpu,
+    ready_from_cpu,
 
-    result_valid,
-    iteration_counter, 
-    cycle_counter,
+    data_to_cpu,
+    valid_to_cpu,
+    ready_to_cpu,
 
-    decoding_start,
-    next_iteration
+    data_to_fpgas,
+    valid_to_fpgas,
+    ready_to_fpgas,
+
+    data_from_fpgas,
+    valid_from_fpgas,
+    ready_from_fpgas,
+
+    router_busy
 );
 
 `include "../../parameters/parameters.sv"
 
 `define MAX(a, b) (((a) > (b)) ? (a) : (b))
-localparam MEASUREMENT_ROUNDS = `MAX(CODE_DISTANCE_X, CODE_DISTANCE_Z);
-localparam PER_DIM_BIT_WIDTH = $clog2(MEASUREMENT_ROUNDS);
-localparam ADDRESS_WIDTH = PER_DIM_BIT_WIDTH * 3;
 
-localparam PU_COUNT = CODE_DISTANCE_X * CODE_DISTANCE_Z * MEASUREMENT_ROUNDS;
 
 input clk;
 input reset;
-output reg [STAGE_WIDTH-1:0] global_stage;
-reg [STAGE_WIDTH-1:0] global_stage_previous;
 
-input [CHILD_COUNT - 1 : 0]  busy_child;
-input [CHILD_COUNT - 1 : 0]  odd_clusters_child;
-input new_round_start;
+input [CTRL_FIFO_WIDTH-1:0] data_from_cpu;
+input valid_from_cpu;
+output reg ready_from_cpu;
 
-output reg result_valid;
-output reg [ITERATION_COUNTER_WIDTH-1:0] iteration_counter;
-output reg [31:0] cycle_counter;
+output reg [CTRL_FIFO_WIDTH-1:0] data_to_cpu;
+output reg valid_to_cpu;
+input ready_to_cpu;
 
-output reg decoding_start;
-output reg next_iteration;
+output reg [CTRL_FIFO_WIDTH-1:0] data_to_fpgas;
+output reg valid_to_fpgas;
+input ready_to_fpgas;
 
+input [CTRL_FIFO_WIDTH-1:0] data_from_fpgas;
+input valid_from_fpgas;
+output reg ready_from_fpgas;
 
-reg [MAXIMUM_BUSY_DELAY-1:0] busy;
+input router_busy;
+
+reg [STAGE_WIDTH-1:0] global_stage;
+
+reg result_valid;
+reg [ITERATION_COUNTER_WIDTH-1:0] iteration_counter;
+reg [31:0] cycle_counter;
+
+reg busy;
 reg odd_clusters;
 
-always@(posedge clk) begin
-    busy[0] <= |busy_child;
-    busy[MAXIMUM_BUSY_DELAY-1:1] <= busy[MAXIMUM_BUSY_DELAY-2:0];
-    odd_clusters <= |odd_clusters_child;
-end
+reg measurement_fusion_on;
+
+reg [$clog2(NUM_CHILDREN + 1)-1:0] return_msg_count;
+
+wire [7:0] message_header;
+assign message_header = data_from_cpu [MSG_HEADER_MSB : MSG_HEADER_LSB];
+
+wire [7:0] message_dest;
+assign message_dest = data_from_cpu [MSG_DEST_MSB : MSG_DEST_LSB]; 
+
 
 always @(posedge clk) begin
     if (reset) begin
         cycle_counter <= 0;
     end else begin
-        if (global_stage == STAGE_MEASUREMENT_LOADING) begin
-            cycle_counter <= 1;
-        end else if (!result_valid && global_stage != STAGE_IDLE) begin
+        if(block_id > 2 && return_msg_count ==0 &&valid_from_fpgas && ready_from_fpgas && data_from_fpgas [MSG_HEADER_MSB : MSG_HEADER_LSB] == HEADER_RESULT) begin
+            cycle_counter <= data_from_fpgas[15:0];
+        end else begin
             cycle_counter <= cycle_counter + 1;
         end
     end
 end
 
-always @(posedge clk) begin
-    if (reset) begin
-        global_stage_previous <= STAGE_IDLE;
-    end else begin
-        global_stage_previous <= global_stage;
-    end
-end
-
-always @(posedge clk) begin
-    if (reset) begin
-        iteration_counter <= 0;
-    end else begin
-        if (global_stage == STAGE_MEASUREMENT_LOADING) begin
-            iteration_counter <= 0;
-        end else if (global_stage == STAGE_GROW && global_stage_previous != STAGE_GROW) begin
-            iteration_counter <= iteration_counter + 1;
-        end
-    end
-end
-
-localparam DELAY_COUNTER_WIDTH = $clog2(MAXIMUM_DELAY + 1);
+localparam DELAY_COUNTER_WIDTH = 8;
 reg [DELAY_COUNTER_WIDTH-1:0] delay_counter;
+reg merge_incomplete;
+reg prelim_busy;
+
+always@(posedge clk) begin
+    if (reset) begin
+        prelim_busy <= 0;
+    end else begin
+        prelim_busy <= router_busy;
+    end
+end
+
+
+reg report_all_latencies;
+reg [3:0] block_id;
 
 always @(posedge clk) begin
     if (reset) begin
         global_stage <= STAGE_IDLE;
         delay_counter <= 0;
-        result_valid <= 0;
-        decoding_start <= 0;
-        next_iteration <= 0;
+        measurement_fusion_on <= 0;
+        block_id <= 0;
     end else begin
         case (global_stage)
             STAGE_IDLE: begin // 0
-                if (new_round_start) begin
-                    global_stage <= STAGE_MEASUREMENT_LOADING;
-                    delay_counter <= 0;
-                    result_valid <= 0;
-                    decoding_start <= 1;
+                if (valid_from_cpu && ready_to_fpgas) begin
+                    if(message_dest == 8'h0) begin
+                        case(message_header)
+                            // HEADER_INITIALIZE_DECODING: begin
+                            //     global_stage <= STAGE_MEASUREMENT_LOADING;
+                            // end
+
+                            // HEADER_SET_BOUNDARIES: begin
+                            //     global_stage <= STAGE_SET_BOUNDARIES;
+                            // end
+
+                            HEADER_DECODE_BLOCK: begin
+                                if(data_from_cpu[2] == 1'b1) begin//wait for result
+                                    global_stage <= STAGE_WAIT_TILL_NODE_RESULTS;
+                                end
+                                report_all_latencies <= data_from_cpu[3];
+                            end
+                        endcase
+                    end
                 end
-                next_iteration <= 0; 
-                // else begin
-                //     result_valid <= 1;
-                // end
-            end
-
-            STAGE_MEASUREMENT_LOADING: begin
-                // Currently this is single cycle as only from external buffer happens.
-                // In future might need multiple
-                global_stage <= STAGE_GROW;
+                iteration_counter <= 0;
                 delay_counter <= 0;
-                result_valid <= 0; // for safety
+                return_msg_count <= 0;
             end
 
-            STAGE_GROW: begin //2
-                global_stage <= STAGE_MERGE;
-                delay_counter <= 0;
-            end
+            // STAGE_SET_BOUNDARIES: begin
+            //     global_stage <= STAGE_IDLE;
+            // end
 
-            STAGE_MERGE: begin //3
-                if (delay_counter >= MAXIMUM_INITIAL_DELAY) begin
-                    if(!busy) begin
-                        if(!odd_clusters) begin
-                            global_stage <= STAGE_PEELING;
-                            delay_counter <= 0;
-                            decoding_start <= 0;
+            STAGE_WAIT_TILL_NODE_RESULTS: begin //4
+                if(block_id == 0) begin
+                    global_stage <= STAGE_IDLE;
+                    block_id <= block_id + 1;
+                end else if (valid_from_fpgas && ready_from_fpgas && return_msg_count < NUM_CHILDREN) begin
+                    if(data_from_fpgas [MSG_HEADER_MSB : MSG_HEADER_LSB] == HEADER_RESULT) begin
+                        if(block_id == 1) begin
+                            global_stage <= STAGE_IDLE;
+                            block_id <= block_id + 1;
                         end else begin
-                            global_stage <= STAGE_GROW;
-                            delay_counter <= 0;
-                            next_iteration <= !next_iteration;
+                            if(block_id == 2) begin
+                                if(return_msg_count == 2) begin
+                                    global_stage <= STAGE_IDLE;
+                                    block_id <= block_id + 1;
+                                    return_msg_count <= 0;
+                                end else begin
+                                    return_msg_count <= return_msg_count + 1;
+                                end
+                            end else begin
+                                return_msg_count <= return_msg_count + 1;
+                            end
                         end
                     end
-                end else begin
-                    delay_counter <= delay_counter + 1;
+                end else if(return_msg_count == NUM_CHILDREN && ready_to_cpu) begin
+                    return_msg_count <= 0;
+                    global_stage <= STAGE_IDLE;
                 end
+                
             end           
-
-            STAGE_PEELING: begin //4
-                if (delay_counter >= MAXIMUM_INITIAL_DELAY) begin
-                    if(!busy) begin
-                        global_stage <= STAGE_RESULT_VALID;
-                        delay_counter <= 0;
-                        next_iteration <= 1;
-                    end
-                end else begin
-                    delay_counter <= delay_counter + 1;
-                    next_iteration <= 0;
-                end
-            end
-
-            STAGE_RESULT_VALID: begin //5
-                global_stage <= STAGE_IDLE;
-                result_valid <= 1;
-            end
-
-
             
             default: begin
                 global_stage <= STAGE_IDLE;
             end
         endcase
     end
+end
+
+// From CPU to FPGA path
+always@(*) begin
+    ready_from_cpu = 1'b0;
+    data_to_fpgas = 64'b0;
+    valid_to_fpgas = 1'b0;
+
+    case(global_stage)
+        STAGE_IDLE: begin
+            ready_from_cpu = ready_to_fpgas;
+            if (valid_from_cpu && ready_to_fpgas) begin
+                if(message_dest == 8'h0) begin
+                    case(message_header)
+                        //Note that messages indicated to root are converted to broadcast (ff) messages
+                        HEADER_INITIALIZE_DECODING: begin
+                            data_to_fpgas = {8'hff, data_from_cpu [MSG_HEADER_MSB : 0]};
+                            valid_to_fpgas = 1'b1;
+                        end
+                        HEADER_DECODE_BLOCK: begin
+                            data_to_fpgas = {8'hff, data_from_cpu [MSG_HEADER_MSB : 0]};
+                            valid_to_fpgas = 1'b1;
+                        end
+
+                        HEADER_SET_BOUNDARIES: begin
+                            data_to_fpgas = data_from_cpu;
+                            valid_to_fpgas = 1'b1;
+                        end
+
+                        HEADER_RESET_CLOCK: begin
+                            data_to_fpgas = {8'hff, data_from_cpu [MSG_HEADER_MSB : 0]};
+                            valid_to_fpgas = 1'b1;
+                        end
+
+                        default: begin
+                            data_to_fpgas = data_from_cpu;
+                            valid_to_fpgas = 1'b0;
+                        end
+                    endcase
+                end else begin
+                    data_to_fpgas = data_from_cpu;
+                    valid_to_fpgas = 1'b1;
+                end
+            end
+        end
+
+        default: begin
+            data_to_fpgas = data_from_cpu;
+            valid_to_fpgas = 1'b0;
+            ready_from_cpu = 1'b0;
+        end
+    endcase
+end
+
+// From FPGA to CPU path
+always@(*) begin
+    ready_from_fpgas = 1'b0;
+    data_to_cpu = 64'b0;
+    valid_to_cpu = 1'b0;
+
+    case(global_stage)
+        STAGE_WAIT_TILL_NODE_RESULTS: begin
+            if(return_msg_count == NUM_CHILDREN) begin
+                data_to_cpu = {8'h0,8'h6,1'b1,15'h0,16'b0,cycle_counter[15:0]};
+                valid_to_cpu = 1'b1;
+                ready_from_fpgas = 1'b0;
+            end else if(report_all_latencies) begin
+                data_to_cpu = data_from_fpgas;
+                valid_to_cpu = valid_from_fpgas;
+                ready_from_fpgas = ready_to_cpu;
+            end else begin
+                data_to_cpu = data_from_fpgas;
+                valid_to_cpu = 1'b0;
+                ready_from_fpgas = 1'b1;
+            end
+        end
+        default: begin
+            data_to_cpu = data_from_fpgas;
+            valid_to_cpu = 1'b0;
+            ready_from_fpgas = 1'b0;
+        end
+    endcase
 end
 
 endmodule
