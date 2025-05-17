@@ -77,7 +77,7 @@ always @(negedge clk) begin
         input_closed = 0;
     end else begin
         if(input_open == 0) begin
-            input_filename = $sformatf("/home/helios/Helios_scalable_QEC/test_benches/test_data/configuration_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
+            input_filename = $sformatf("configuration_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
             input_file = $fopen(input_filename, "r");
             input_open = 1;
         end

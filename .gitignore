@@ -1,0 +1,9 @@
+.vscode/
+PRJ/*
+!*.xpr
+
+test_data/*
+software_code/*
+!*.c
+!*.sh
+!*.h

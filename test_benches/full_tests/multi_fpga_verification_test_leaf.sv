@@ -303,7 +303,7 @@ always @(negedge clk) begin
         data_loading_complete = 0;
     end else if (loading_state == 3'b1 && full_test_completed == 0) begin
         if(input_open == 1) begin
-            input_filename = $sformatf("/home/helios/Helios_scalable_QEC/test_benches/test_data/input_data_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
+            input_filename = $sformatf("input_data_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
             input_file = $fopen(input_filename, "r");
             input_open = 0;
         end
@@ -333,10 +333,10 @@ always @(posedge clk) begin
     if (decoder.controller.global_stage_d == STAGE_PEELING && full_test_completed == 0) begin // When we move to peeling we are doen with clustering
 //       $display("%t\tTest case %d pass %d cycles %d iterations %d syndromes", $time, test_case, cycle_counter, iteration_counter, syndrome_count);
        if(open == 1) begin
-            output_filename_data = $sformatf("/home/helios/Helios_scalable_QEC/test_benches/test_data/output_data_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
+            output_filename_data = $sformatf("output_data_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
             output_file_data = $fopen(output_filename_data, "w");
             open = 0;
-            output_filename_results = $sformatf("/home/helios/Helios_scalable_QEC/test_benches/test_data/output_results_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
+            output_filename_results = $sformatf("output_results_%0d_%0d.txt", CODE_DISTANCE, FPGA_ID);
             output_file_results = $fopen(output_filename_results, "w");
             open = 0;
         end
